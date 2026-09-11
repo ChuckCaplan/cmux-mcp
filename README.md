@@ -2,7 +2,7 @@
 
 A single-file Python 3 stdlib server exposing the **entire installed cmux CLI** to Claude Code. No pip dependencies, command filtering, or cmux changes.
 
-Requires macOS, Python 3, cmux, and Claude Code. Tested with Python 3.10.
+Requires macOS, Python 3, cmux, and Claude Code. Live-tested against cmux 0.64.22 (102) on macOS with Python 3.10; the regression suite additionally runs on Python 3.10-3.14 across macOS and Linux in CI. Later cmux versions are expected to work: the server passes commands through to the installed CLI without interpreting them, and discovers commands and RPC method names at runtime via `cmux_help` and `cmux_methods`.
 
 Register it, replacing the example path with the absolute path to your checkout:
 
@@ -53,6 +53,6 @@ The transport follows [MCP 2024-11-05 stdio](https://modelcontextprotocol.io/spe
 
 Calls are handled sequentially: while a command runs, the server does not read further requests or answer pings. MCP cancellation notifications do not interrupt commands; they run until completion or their configured timeout. Use a short `timeout_seconds` when sampling streams such as `events`. SIGINT or SIGTERM to the server terminates the active child process group and exits the server. Input lines have no size limit; this stdio transport assumes a trusted local client.
 
-Run the stdlib regression suite with `python3 -B -m unittest -v test_cmux_mcp.py`. See [VERIFICATION.md](VERIFICATION.md) for completed live cmux and Claude Code tests and the untested scope. Only `cmux_mcp.py` is needed to run the server.
+Run the stdlib regression suite with `python3 -B -m unittest -v test_cmux_mcp.py`. It needs no pip packages and no cmux install: a fake CLI is substituted through `CMUX_BIN`. [GitHub Actions](.github/workflows/tests.yml) runs it on every push and pull request to `main`. See [VERIFICATION.md](VERIFICATION.md) for completed live cmux and Claude Code tests and the untested scope. Only `cmux_mcp.py` is needed to run the server.
 
 Licensed under the [MIT License](LICENSE).
