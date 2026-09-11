@@ -2,6 +2,7 @@
 """Unrestricted cmux CLI bridge: Python 3 stdlib, newline-delimited stdio MCP."""
 
 import json
+import math
 import os
 import selectors
 import signal
@@ -224,7 +225,10 @@ def run_cmux(args, stdin_text=None, timeout_seconds=30):
                     stream.close()
         selector.close()
     for name, data in buffers.items():
-        result[name] = data.decode("utf-8", errors="replace") + result[name]
+        captured = data.decode("utf-8", errors="replace")
+        if captured and result[name] and not captured.endswith("\n"):
+            captured += "\n"
+        result[name] = captured + result[name]
         if result["truncated"][name]:
             notes.append("%s truncated at %d bytes; remaining output discarded." % (name, OUTPUT_LIMIT))
     if notes:
@@ -252,13 +256,24 @@ def validate_arguments(name, arguments):
         if spec is None:
             raise RPCError(-32602, "Unknown argument: " + key)
         kind = spec["type"]
-        valid = {
+        validator = {
             "string": lambda: isinstance(value, str),
             "array": lambda: isinstance(value, list) and all(isinstance(item, str) for item in value),
-            "number": lambda: type(value) in (int, float) and 0 < value <= 600,
-            "integer": lambda: type(value) is int and value >= spec.get("minimum", 1),
+            "number": lambda: type(value) is int or (type(value) is float and math.isfinite(value)),
+            "integer": lambda: type(value) is int,
             "boolean": lambda: type(value) is bool,
-        }[kind]()
+        }.get(kind)
+        if validator is None:
+            # An unsupported server schema is an implementation error, not bad input.
+            raise RuntimeError("Unsupported schema type: %s" % kind)
+        valid = validator()
+        if valid and kind in ("number", "integer"):
+            valid = (
+                ("minimum" not in spec or value >= spec["minimum"])
+                and ("exclusiveMinimum" not in spec or value > spec["exclusiveMinimum"])
+                and ("maximum" not in spec or value <= spec["maximum"])
+                and ("exclusiveMaximum" not in spec or value < spec["exclusiveMaximum"])
+            )
         if not valid or ("enum" in spec and value not in spec["enum"]):
             raise RPCError(-32602, "Invalid argument %s; expected %s" % (key, json.dumps(spec)))
 
@@ -266,7 +281,9 @@ def validate_arguments(name, arguments):
 def add_json_result(result):
     if result["exit_code"] == 0 and not result["timed_out"] and not result["truncated"]["stdout"]:
         try:
-            result["result"] = json.loads(result["stdout"])
+            result["result"] = json.loads(
+                result["stdout"], parse_constant=reject_constant, parse_float=finite_float,
+            )
         except (ValueError, RecursionError):
             pass
     return result
@@ -301,7 +318,7 @@ def call_tool(name, arguments):
                 params.setdefault("scrollback", True)
         result = add_json_result(run_cmux(["rpc", method, json.dumps(params, ensure_ascii=True)]))
     return {
-        "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=True)}],
+        "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=True, allow_nan=False)}],
         "isError": result["exit_code"] != 0 or result["timed_out"],
     }
 
@@ -339,6 +356,13 @@ def write_message(message):
 
 def reject_constant(value):
     raise ValueError("Invalid JSON constant: " + value)
+
+
+def finite_float(value):
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("JSON number exceeds finite float range: " + value)
+    return number
 
 
 def serve():

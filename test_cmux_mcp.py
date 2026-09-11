@@ -1,5 +1,6 @@
 """Stdlib regression tests. Run: python3 -B -m unittest -v test_cmux_mcp.py"""
 
+import io
 import json
 import os
 from pathlib import Path
@@ -37,6 +38,12 @@ elif mode == 'bad-utf8':
 elif mode == 'fail':
     print('intentional CLI failure', file=sys.stderr)
     sys.exit(7)
+elif mode == 'read-error':
+    os.write(1, b'captured stdout')
+    os.write(2, b'captured stderr')
+    time.sleep(0.1)
+    os.write(1, b'trigger another read')
+    time.sleep(10)
 else:
     print(json.dumps({'args':sys.argv[1:], 'stdin':sys.stdin.read()}))
 '''
@@ -125,6 +132,93 @@ class ServerTests(unittest.TestCase):
         for args in ({'lines': True}, {'lines': 0}, {'scrollback': 'true'}, {'surface_id': 'surface:1'}):
             with self.subTest(args=args), self.assertRaises(server.RPCError):
                 server.call_tool('cmux_read_screen', args)
+
+    def test_numeric_validation_uses_schema_bounds(self):
+        for timeout in (0.1, 30, 600):
+            server.validate_arguments('cmux', {'args': [], 'timeout_seconds': timeout})
+        cases = [
+            ('cmux', 'timeout_seconds', {'args': []},
+             {'type': 'number', 'minimum': -2, 'exclusiveMaximum': 700},
+             (-2, 0, 650, 699.5), (-2.1, 700)),
+            ('cmux_read_screen', 'lines', {},
+             {'type': 'integer', 'exclusiveMinimum': -3, 'maximum': 2},
+             (-2, 0, 2), (-3, 3, 1.5)),
+        ]
+        for name, key, base, spec, accepted, rejected in cases:
+            original = server.TOOL_BY_NAME[name]['inputSchema']['properties'][key]
+            with patch.dict(original, spec, clear=True):
+                for value in accepted:
+                    with self.subTest(name=name, accepted=value):
+                        server.validate_arguments(name, {**base, key: value})
+                for value in rejected:
+                    with self.subTest(name=name, rejected=value), self.assertRaises(server.RPCError) as error:
+                        server.validate_arguments(name, {**base, key: value})
+                    self.assertEqual(error.exception.code, -32602)
+
+    def test_unsupported_schema_is_an_internal_error(self):
+        properties = server.TOOL_BY_NAME['cmux']['inputSchema']['properties']
+        request = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                   'params': {'name': 'cmux', 'arguments': {'args': [], 'future': {}}}}
+        incoming = io.TextIOWrapper(io.BytesIO((json.dumps(request) + '\n').encode()))
+        with patch.dict(properties, {'future': {'type': 'object'}}), \
+                patch.object(sys, 'stdin', incoming), \
+                patch.object(sys, 'stderr', io.StringIO()) as errors, \
+                patch.object(server, 'write_message') as write:
+            server.serve()
+        self.assertEqual(write.call_args.args[0]['error']['code'], -32603)
+        self.assertIn('Unsupported schema type: object', errors.getvalue())
+
+    def test_tool_content_remains_strict_json(self):
+        for name, arguments in [('cmux_methods', {}), ('cmux_list', {'what': 'tree'})]:
+            for token in ('NaN', 'Infinity', '-Infinity', '1e400', '-1e400'):
+                stdout = '{"nested": [0, {"value": %s}]}' % token
+                successful = {'exit_code': 0, 'stdout': stdout, 'stderr': '', 'timed_out': False,
+                              'truncated': {'stdout': False, 'stderr': False}}
+                with self.subTest(name=name, token=token), \
+                        patch.object(server, 'run_cmux', return_value=successful):
+                    response = server.call_tool(name, arguments)
+                    result = json.loads(response['content'][0]['text'], parse_constant=server.reject_constant)
+                    self.assertEqual(result['stdout'], stdout)
+                    self.assertNotIn('result', result)
+                    self.assertFalse(response['isError'])
+        stdout = '{"small": 1.5, "large": 1e300, "text": "NaN and Infinity"}'
+        successful = {'exit_code': 0, 'stdout': stdout, 'stderr': '', 'timed_out': False,
+                      'truncated': {'stdout': False, 'stderr': False}}
+        with patch.object(server, 'run_cmux', return_value=successful):
+            response = server.call_tool('cmux_methods', {})
+        result = json.loads(response['content'][0]['text'], parse_constant=server.reject_constant)
+        self.assertEqual(result['result'], json.loads(stdout))
+
+    def test_read_error_preserves_output_and_cleans_up(self):
+        original_popen, original_read = subprocess.Popen, os.read
+        processes, output_fds, captured = [], set(), set()
+
+        def start(*args, **kwargs):
+            process = original_popen(*args, **kwargs)
+            processes.append(process)
+            output_fds.update((process.stdout.fileno(), process.stderr.fileno()))
+            return process
+
+        def read(fd, size):
+            if fd in output_fds and captured == output_fds:
+                raise OSError('injected read failure')
+            chunk = original_read(fd, size)
+            if fd in output_fds and chunk:
+                captured.add(fd)
+            return chunk
+
+        with patch.object(server.subprocess, 'Popen', side_effect=start), \
+                patch.object(server.os, 'read', side_effect=read):
+            response = server.call_tool('cmux', {'args': ['read-error'], 'timeout_seconds': 3})
+        result = payload(response)
+        self.assertTrue(response['isError'])
+        self.assertFalse(result['timed_out'])
+        self.assertTrue(result['stdout'].startswith('captured stdout'))
+        self.assertEqual(result['stderr'], 'captured stderr\nCould not run cmux: injected read failure')
+        self.assertIsNotNone(processes[0].returncode)
+        self.assert_dead(processes[0].pid)
+        self.assertTrue(processes[0].stdout.closed)
+        self.assertTrue(processes[0].stderr.closed)
 
     def test_wrapper_arguments_and_destructive_construction_only(self):
         successful = {'exit_code': 0, 'stdout': '{}', 'stderr': '', 'timed_out': False,

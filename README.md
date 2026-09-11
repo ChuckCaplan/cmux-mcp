@@ -49,7 +49,9 @@ Tool content is a JSON text object containing `exit_code` (negative for a signal
 
 Wrapper RPC keys are verified against the installed binary: `surface` maps to `surface_id`; other keys are exactly `text`, `key`, `lines`, and `scrollback`. `lines` defaults `scrollback` to true unless explicitly supplied. `cmux_list` sends `{}` to `window.list`, `workspace.list`, `pane.list`, or `system.tree`. cmux silently ignores unknown RPC keys, so wrapper arguments are checked for typos. Arbitrary raw RPC parameters remain available through `cmux`.
 
-The transport follows [MCP 2024-11-05 stdio](https://modelcontextprotocol.io/specification/2024-11-05/basic/transports): one JSON-RPC object per line, notifications receive no replies, and stdout contains protocol messages only. Calls are handled sequentially. See [the cmux socket reference](https://manaflow-ai-cmux.mintlify.app/automation/socket-api) for RPC context; the installed CLI's help/capabilities remain authoritative.
+The transport follows [MCP 2024-11-05 stdio](https://modelcontextprotocol.io/specification/2024-11-05/basic/transports): one JSON-RPC object per line, notifications receive no replies, and stdout contains protocol messages only. See [the cmux socket reference](https://manaflow-ai-cmux.mintlify.app/automation/socket-api) for RPC context; the installed CLI's help/capabilities remain authoritative.
+
+Calls are handled sequentially: while a command runs, the server does not read further requests or answer pings. MCP cancellation notifications do not interrupt commands; they run until completion or their configured timeout. Use a short `timeout_seconds` when sampling streams such as `events`. SIGINT or SIGTERM to the server terminates the active child process group and exits the server. Input lines have no size limit; this stdio transport assumes a trusted local client.
 
 Run the stdlib regression suite with `python3 -B -m unittest -v test_cmux_mcp.py`. See [VERIFICATION.md](VERIFICATION.md) for completed live cmux and Claude Code tests and the untested scope. Only `cmux_mcp.py` is needed to run the server.
 
