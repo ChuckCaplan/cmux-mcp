@@ -1,0 +1,36 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# macOS metadata
+.DS_Store
+._*
+
+# Local credentials, agent configuration, and editor state
+.env
+.env.*
+!.env.example
+.claude/
+.claude.json
+.mcp.json
+.codex/
+.agents/
+.vscode/
+.idea/
+
+# Local logs, transcripts, and live-test artifacts
+*.log
+*.jsonl
+*.stderr
+cmux-mcp-live-results.json
+cmux-mcp-claude-session*
+cmux_mcp_live_test.py
+cmux_mcp_claude_test.py
+local/
+private/
+*.bak
